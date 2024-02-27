@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+    <include file="$(find image_launcher)/launch/get_nnrb_img.launch">
+        <arg name="connections_file" value="monodepth.csv"/>
+    </include>
+    <include file="$(find midas_monodepth)/launch/run_monodepth.launch"/>
+    <include file="$(find image_launcher)/launch/send_img_to_nnrb_img.launch">
+        <arg name="image_sub_topic" value="/depth_image"/>
+        <arg name="image_pub_topic" value="/depth_image/compressed"/>
+    </include>
+</launch>

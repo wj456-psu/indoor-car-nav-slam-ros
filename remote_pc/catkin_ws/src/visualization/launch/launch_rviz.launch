@@ -1,0 +1,5 @@
+<launch>
+    <arg name="mode" default="navigation" doc="opt: navigation, multi_navigation, slam"/>
+    <node pkg="rviz" type="rviz" name="rviz" required="true"
+        args="-d $(find visualization)/rviz/$(arg mode).rviz" />
+</launch>

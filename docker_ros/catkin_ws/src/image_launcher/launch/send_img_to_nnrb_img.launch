@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+    <arg name="image_sub_topic" default="/darknet_ros/detection_image"/>
+    <arg name="image_pub_topic" default="/detection_compressed_image"/>
+    <arg name="fps" default="15"/>
+    <node pkg="image_launcher" type="image_compressor.py" name="image_compressor_node" output="screen" required="true">
+        <param name="image_sub_topic" value="$(arg image_sub_topic)"/>
+        <param name="image_pub_topic" value="$(arg image_pub_topic)"/>
+    </node>
+    <node pkg="topic_tools" type="throttle" name="throttle_node" args="messages $(arg image_sub_topic) $(arg fps) $(arg image_pub_topic)" output="screen" required="true"/>
+</launch>

@@ -1,0 +1,11 @@
+#!/usr/bin/expect -f
+
+set robotip [lindex $argv 0]
+set username [lindex $argv 1]
+spawn scp -r nanorobotv2@$robotip:~/catkin_ws/src/robot_navigation/maps "/home/$username/catkin_ws/src/robot_navigation"
+expect {
+    -re "password:" { send "nanorobot\r" }
+    -re "not known" { exit 1 }
+}
+
+expect "$ " { exit 0 }

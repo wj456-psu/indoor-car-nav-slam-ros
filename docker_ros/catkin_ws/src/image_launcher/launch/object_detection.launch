@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+    <include file="$(find image_launcher)/launch/get_nnrb_img.launch">
+        <arg name="connections_file" value="obj_detect.csv"/>
+    </include>
+    <include file="$(find darknet_ros)/launch/yolo_v3.launch"/>
+    <include file="$(find image_launcher)/launch/send_img_to_nnrb_img.launch">
+        <arg name="image_sub_topic" value="/darknet_ros/detection_image"/>
+        <arg name="image_pub_topic" value="/obj_detection/compressed"/>
+    </include>
+</launch>

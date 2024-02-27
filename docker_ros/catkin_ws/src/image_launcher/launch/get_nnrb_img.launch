@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+    <arg name="connections_file" default="obj_detect.csv"/>
+    <include file="$(find wsl2_ros_bridge)/launch/connect.launch">
+        <arg name="connections_file" value="$(arg connections_file)"/>
+    </include>
+    <node pkg="image_launcher" type="compressed_image_converter.py" name="compressed_image_converter" output="screen"/>
+</launch>

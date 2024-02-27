@@ -1,0 +1,297 @@
+#!/usr/bin/env python
+
+import rospy
+
+import copy
+import tf
+from actionlib_msgs.msg import GoalID, GoalStatus
+from geometry_msgs.msg import PoseStamped
+from interactive_markers.interactive_marker_server import \
+    InteractiveMarkerServer
+from interactive_markers.menu_handler import MenuHandler
+from move_base_msgs.msg import MoveBaseActionResult
+from visualization_msgs.msg import (InteractiveMarker,
+                                    InteractiveMarkerControl,
+                                    InteractiveMarkerFeedback, Marker,
+                                    MarkerArray)
+
+
+class MultiGoalPoint:
+    def __init__(self):
+        rospy.loginfo("Started multi_goal_point")
+        rospy.on_shutdown(self.shutdown)
+
+        # Init values
+        self.count = 0
+        self.current_index = 0
+        self.finished = False
+        self.latest_status = GoalStatus.PENDING
+
+        # Topics for move_base
+        self.click_goal_sub = rospy.Subscriber(
+            "/goal", PoseStamped, self.click_callback)
+        self.goal_pub = rospy.Publisher(
+            "/move_base_simple/goal", PoseStamped, queue_size=1)
+        self.goal_status_sub = rospy.Subscriber(
+            "/move_base/result", MoveBaseActionResult, self.status_callback)
+        self.goal_status_pub = rospy.Publisher(
+            '/move_base/result', MoveBaseActionResult, queue_size=1)
+        self.cancel_all_goal_pub = rospy.Publisher(
+            "/move_base/cancel", GoalID, queue_size=1)
+
+        # RViz visualization
+        self.markerArray = MarkerArray()
+        self.mark_pub = rospy.Publisher(
+            "/path_point_array", MarkerArray, queue_size=100)
+        # Create an InteractiveMarkerServer
+        self.server = InteractiveMarkerServer("marker_server")
+        self.menu_handler = MenuHandler()
+        self.menu_handler.insert(
+            "Set as current goal", callback=self.menu_set_current_goal_callback)
+        self.menu_handler.insert("Delete", callback=self.menu_delete_callback)
+
+    # Set marker as a goal point
+    def set_goal_point(self, marker):
+        pose = PoseStamped()
+        pose.header.frame_id = "map"
+        pose.header.stamp = rospy.Time.now()
+        pose.pose.position.x = marker.pose.position.x
+        pose.pose.position.y = marker.pose.position.y
+        pose.pose.orientation = marker.pose.orientation
+        self.goal_pub.publish(pose)
+
+    # Cancel current goal for setting new goal point
+    def cancel_current_goal(self):
+        result = MoveBaseActionResult()
+        result.header.stamp = rospy.Time.now()
+        result.status.status = GoalStatus.PREEMPTED
+        self.goal_status_pub.publish(result)
+
+    # Callback when there is a result
+    def status_callback(self, msg):
+        self.latest_status = msg.status.status
+        if self.latest_status == GoalStatus.PREEMPTED:
+            rospy.loginfo(
+                f"Cancel current goal to marker_{self.current_index}")
+            return
+        rospy.loginfo(
+            f"Current marker count: {self.count}, Current goal: {self.current_index}")
+        if self.count < 1:
+            if msg.status.status == GoalStatus.SUCCEEDED:
+                rospy.loginfo("Goal reached")
+            else:
+                rospy.logerr(
+                    f"Goal cannot be reached, error: {msg.status.status}")
+        else:
+            if msg.status.status == GoalStatus.SUCCEEDED:
+                self.handle_goal_reached()
+            else:
+                rospy.logerr(
+                    f"Goal to marker_{self.current_index} has error: {msg.status.status}")
+                self.handle_goal_unreachable(msg.status.status)
+
+    # Handle looping through goal point
+    def handle_goal_reached(self):
+        if self.count == 1:
+            rospy.loginfo("Reached first goal")
+            self.finished = True
+            return
+        rospy.loginfo(f"Goal reached on marker_{self.current_index}")
+        self.update_current_index()
+        self.set_goal_point(self.markerArray.markers[self.current_index])
+
+    # Handle error here
+    def handle_goal_unreachable(self, status):
+        if status == GoalStatus.LOST:
+            rospy.logerr(
+                f"Goal to marker_{self.current_index} is lost, Try again!")
+            self.set_goal_point(self.markerArray.markers[self.current_index])
+
+    # Update to next goal point
+    def update_current_index(self):
+        self.current_index += 1
+        if self.current_index >= self.count:
+            rospy.loginfo(
+                "Reached the last marker, looping to the initial goal...")
+            self.current_index = 0
+
+    # Callback when a marker is set on RViz
+    def click_callback(self, msg):
+        rospy.loginfo("Adding Marker...")
+
+        # Get marker from msg
+        pose = msg.pose
+        marker = self.create_marker(pose)
+        marker_for_int = self.make_marker_for_int(marker)
+
+        # Create an InteractiveMarker object
+        int_marker = self.create_int_marker(marker_for_int, self.count)
+
+        # Insert the InteractiveMarker to the server
+        self.server.insert(int_marker, self.marker_feedback_callback)
+
+        # Create a menu handler for the interactive marker
+        self.menu_handler.apply(self.server, int_marker.name)
+
+        # Commit the changes to the server
+        self.server.applyChanges()
+
+        # Add the marker to the MarkerArray
+        self.markerArray.markers.append(marker)
+        self.markerArray.markers[-1].id = self.count
+
+        # Publish the MarkerArray
+        self.mark_pub.publish(self.markerArray)
+
+        self.count += 1
+
+        if (self.count == 1 or self.finished):
+            self.finished = False
+            self.set_goal_point(self.markerArray.markers[self.current_index])
+
+        quaternion = (msg.pose.orientation.x, msg.pose.orientation.y,
+                      msg.pose.orientation.z, msg.pose.orientation.w)
+        theta = tf.transformations.euler_from_quaternion(quaternion)[2]
+        rospy.loginfo(
+            f"Added {int_marker.name} ({msg.pose.position.x, msg.pose.position.y, theta*180/3.14})")
+
+    # Create a marker for RViz
+    def create_marker(self, pose):
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.header.stamp = rospy.Time.now()
+        marker.type = marker.CYLINDER
+        marker.action = marker.ADD
+        marker.scale.x = 0.15
+        marker.scale.y = 0.15
+        marker.scale.z = 0.45
+        marker.color.a = 1.0
+        marker.color.r = 0.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        marker.pose = pose
+        return marker
+
+    # Create a marker to be used as an InteractiveMarker
+    def make_marker_for_int(self, marker):
+        marker_for_int = copy.deepcopy(marker)
+        marker_for_int.scale.x += 0.05
+        marker_for_int.scale.y += 0.05
+        marker_for_int.scale.z += 0.05
+        marker_for_int.color.r, marker_for_int.color.g, marker_for_int.color.b = 1.0, 0.0, 1.0
+        marker_for_int.pose.position.z += 0.1
+        return marker_for_int
+
+    # Create an InteractiveMarker for RViz
+    def create_int_marker(self, marker_for_int, id):
+        interactive_marker = InteractiveMarker()
+        interactive_marker.header.frame_id = "map"
+        interactive_marker.name = f"marker_{id}"
+        interactive_marker.description = f"Interactive Marker {id}"
+        interactive_marker.pose = marker_for_int.pose
+        interactive_marker.scale = 0.35
+
+        # Create an InteractiveMarkerControl for movement
+        control_move = InteractiveMarkerControl()
+        control_move.orientation.w = 0.707
+        control_move.orientation.y = 0.707
+        control_move.interaction_mode = InteractiveMarkerControl.MOVE_PLANE
+        control_move.always_visible = True
+        control_move.markers.append(marker_for_int)
+
+        # Create an InteractiveMarkerControl for rotation
+        control_rotate = InteractiveMarkerControl()
+        control_rotate.orientation.w = 0.707
+        control_rotate.orientation.y = 0.707
+        control_rotate.interaction_mode = InteractiveMarkerControl.ROTATE_AXIS
+        control_rotate.always_visible = True
+
+        # Create an InteractiveMarkerControl for menu
+        control_menu = InteractiveMarkerControl()
+        control_menu.interaction_mode = InteractiveMarkerControl.BUTTON
+        control_menu.always_visible = True
+
+        # Add the InteractiveMarkerControls to the InteractiveMarker
+        interactive_marker.controls.append(control_move)
+        interactive_marker.controls.append(control_rotate)
+        interactive_marker.controls.append(control_menu)
+        return interactive_marker
+
+    # Callback when interacting with the InteractiveMarker
+    def marker_feedback_callback(self, feedback):
+        if feedback.event_type == InteractiveMarkerFeedback.MOUSE_UP:
+            rospy.loginfo(f"Moved {feedback.marker_name}")
+            marker_id = int(feedback.marker_name.replace("marker_", ""))
+            marker = self.markerArray.markers[marker_id]
+            marker.pose = feedback.pose
+            marker.pose.position.z = 0.0
+            rospy.loginfo(f"Updated {feedback.marker_name}")
+            self.mark_pub.publish(self.markerArray)
+
+            if marker_id == self.current_index:
+                self.cancel_current_goal()
+                self.set_goal_point(
+                    self.markerArray.markers[self.current_index])
+
+    def menu_set_current_goal_callback(self, feedback):
+        if feedback.event_type == InteractiveMarkerFeedback.MENU_SELECT:
+            rospy.loginfo(f"Set {feedback.marker_name} as the current goal")
+
+            marker_id = int(feedback.marker_name.replace("marker_", ""))
+            self.current_index = marker_id
+
+            self.cancel_current_goal()
+            self.set_goal_point(self.markerArray.markers[self.current_index])
+
+    def menu_delete_callback(self, feedback):
+        if feedback.event_type == InteractiveMarkerFeedback.MENU_SELECT:
+            rospy.loginfo(f"Delete {feedback.marker_name} selected")
+
+            marker_id = int(feedback.marker_name.replace("marker_", ""))
+            self.server.erase(f"marker_{marker_id}")
+
+            # Refresh MarkerArray
+            self.remove_marker_array()
+            del self.markerArray.markers[marker_id]
+            # Update new ids
+            for i, marker in enumerate(self.markerArray.markers):
+                marker.id = i
+                marker.action = Marker.ADD
+            self.mark_pub.publish(self.markerArray)
+            self.server.clear()
+            for marker in self.markerArray.markers:
+                marker_for_int = self.make_marker_for_int(marker)
+                int_marker = self.create_int_marker(marker_for_int, marker.id)
+                self.server.insert(int_marker, self.marker_feedback_callback)
+                self.menu_handler.apply(self.server, int_marker.name)
+            self.server.applyChanges()
+
+            self.count -= 1
+            # Adjust the current index if it is out of range
+            if self.current_index >= self.count:
+                self.current_index = max(self.count - 1, 0)
+
+            self.cancel_current_goal()
+            if self.count > 0:
+                self.set_goal_point(
+                    self.markerArray.markers[self.current_index])
+            else:
+                self.cancel_all_goal_pub.publish(GoalID())
+
+    # Clear all markers on shutdown
+    def shutdown(self):
+        self.server.clear()
+        self.server.applyChanges()
+        self.remove_marker_array()
+
+    # Clear all markers in MarkerArray
+    def remove_marker_array(self):
+        for marker in self.markerArray.markers:
+            marker.action = marker.DELETE
+        self.mark_pub.publish(self.markerArray)
+
+
+if __name__ == "__main__":
+    rospy.init_node("multi_goal_point")
+    MultiGoalPoint()
+    rospy.spin()

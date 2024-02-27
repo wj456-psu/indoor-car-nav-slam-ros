@@ -1,0 +1,12 @@
+#!/usr/bin/expect -f
+
+set robotip [lindex $argv 0]
+set command [lindex $argv 1]
+spawn ssh nanorobotv2@$robotip
+expect {
+    -re "password:" { send "nanorobot\r" }
+    -re "not known" { exit 1 }
+}
+expect "$ " { send "$command\r" }
+set timeout -1
+expect "$ " { exit 0 }
